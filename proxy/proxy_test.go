@@ -164,6 +164,50 @@ func TestProxy_ServeHTTP(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectedBody:   "cleaned-version response",
 		},
+		{
+			name:   "OpenAI Unary Chat Completions",
+			method: "POST",
+			path:   "/v1/chat/completions",
+			body:   `{"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": "hello"}], "temperature": 0.7}`,
+			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
+				expectedPath := "/v1beta1/publishers/google/models/gemini-1.5-flash:generateContent"
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected backend path: %s, expected: %s", r.URL.Path, expectedPath)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"candidates": [{"content": {"parts": [{"text": "openai unary response"}]}}], "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 10, "totalTokenCount": 15}}`))
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"content":"openai unary response"`,
+		},
+		{
+			name:   "OpenAI Streaming Chat Completions",
+			method: "POST",
+			path:   "/chat/completions",
+			body:   `{"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": "stream me"}], "stream": true}`,
+			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
+				expectedPath := "/v1beta1/publishers/google/models/gemini-1.5-flash:streamGenerateContent"
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected backend path: %s, expected: %s", r.URL.Path, expectedPath)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"chunk1\"}]}}]}\n\n"))
+			},
+			expectedStatus: http.StatusOK,
+			checkHeaders: map[string]string{
+				"Content-Type": "text/event-stream",
+			},
+			expectedBody: `chunk1`,
+		},
+		{
+			name:   "OpenAI Models List",
+			method: "GET",
+			path:   "/v1/models",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"id":"gemini-1.5-flash"`,
+		},
 	}
 
 	for _, tc := range tests {

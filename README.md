@@ -6,7 +6,9 @@ It intercepts incoming requests formatted for Google AI Studio, translates the p
 
 ## Key Features
 
-- **Path Translating**: Intercepts AI Studio API paths (like `/v1beta/models/{model}:generateContent`) and maps them to the global Vertex AI REST API Key endpoints (`/v1beta1/publishers/google/models/{model}:generateContent`).
+- **Path & Format Translating**: Intercepts AI Studio API paths (like `/v1beta/models/{model}:generateContent`) and maps them to global Vertex AI REST endpoints.
+- **OpenAI Compatibility Layer**: Translates OpenAI-style `/chat/completions` (and `/v1/chat/completions`) requests to Gemini format, and converts the response or SSE streams back into OpenAI-compatible format.
+- **Models Endpoint**: Implements a standard `/v1/models` route returning the list of active models.
 - **SSE Streaming Support**: Proxies streamed responses chunk-by-chunk using a non-buffering flushing writer, keeping latency low.
 - **Flexible Authentication**: Resolves the Vertex AI API Key from:
   1. Request Header `x-goog-api-key`
@@ -103,7 +105,32 @@ curl -X POST "http://localhost:8080/v1beta/models/gemini-1.5-flash:countTokens" 
   }'
 ```
 
-### 4. Health Check
+### 4. OpenAI Compatibility Unary Request (`/v1/chat/completions`)
+```bash
+curl -X POST "http://localhost:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-1.5-flash",
+    "messages": [
+      {"role": "user", "content": "Write a 3-word slogan for coding."}
+    ]
+  }'
+```
+
+### 5. OpenAI Compatibility Streaming Request
+```bash
+curl -N -X POST "http://localhost:8080/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-1.5-flash",
+    "messages": [
+      {"role": "user", "content": "Count from 1 to 5."}
+    ],
+    "stream": true
+  }'
+```
+
+### 6. Health Check
 ```bash
 curl http://localhost:8080/healthz
 ```
@@ -112,14 +139,25 @@ curl http://localhost:8080/healthz
 
 ## Integration with Client Tools & SDKs
 
-Point your AI Studio (Gemini API) clients to this proxy server.
+Point your AI Studio (Gemini API) or OpenAI compatible clients to this proxy server.
 
 ### Cursor IDE Integration
+
+You can integrate this proxy into Cursor using either the **Gemini** provider configuration or the **OpenAI** provider configuration.
+
+#### Option A: Gemini Configuration
 1. Go to **Settings > Models**.
 2. Select **Gemini**.
 3. Under the Gemini configuration, set:
    - **Gemini API Key**: Your Google Cloud Vertex API Key (or anything if you've set `VERTEX_API_KEY` on the proxy server).
    - **Base URL / Endpoint Override**: `http://localhost:8080/v1beta` (or `http://localhost:8080/v1` depending on Cursor version).
+
+#### Option B: OpenAI Configuration (OpenAI Compatibility Layer)
+1. Go to **Settings > Models**.
+2. Select **OpenAI**.
+3. Under the OpenAI configuration, set:
+   - **OpenAI API Key**: Your Google Cloud Vertex API Key (or `PROXY_API_KEY` if configured).
+   - **Override URL**: `http://localhost:8080/v1` (or `http://localhost:8080` depending on the client).
 
 ### Gemini Developer Node.js SDK
 ```javascript
