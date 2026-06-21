@@ -643,20 +643,27 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	var handlerErr error
 	if openAIReq.Stream {
-		p.handleStreamResponse(w, resp.Body, model)
+		handlerErr = p.handleStreamResponse(w, resp.Body, model)
 	} else {
-		p.handleUnaryResponse(w, resp.Body, model)
+		handlerErr = p.handleUnaryResponse(w, resp.Body, model)
 	}
 
-	log.Printf("Completed [200] in %v - OpenAI Path: %s", duration, r.URL.Path)
+	duration = time.Since(startTime)
+
+	if handlerErr != nil {
+		log.Printf("Error processing response in handler: %v - OpenAI Path: %s", handlerErr, r.URL.Path)
+	} else {
+		log.Printf("Completed [200] in %v - OpenAI Path: %s", duration, r.URL.Path)
+	}
 }
 
-func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model string) {
+func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model string) error {
 	var geminiResp GeminiResponse
 	if err := json.NewDecoder(src).Decode(&geminiResp); err != nil {
 		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to parse Vertex AI response: "+err.Error())
-		return
+		return err
 	}
 
 	openAIResp := OpenAIResponse{
@@ -703,10 +710,10 @@ func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 	}
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(openAIResp)
+	return json.NewEncoder(w).Encode(openAIResp)
 }
 
-func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model string) {
+func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model string) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -717,13 +724,23 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 	w.WriteHeader(http.StatusOK)
 
 	fw := NewFlushingWriter(w)
-	scanner := bufio.NewScanner(src)
+	reader := bufio.NewReader(src)
 
 	streamID := "chatcmpl-" + generateRandomID()
 	created := time.Now().Unix()
+	first := true
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				return err
+			}
+			break
+		}
+
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
 		if line == "" {
 			continue
 		}
@@ -736,6 +753,7 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 
 			var geminiResp GeminiResponse
 			if err := json.Unmarshal([]byte(dataContent), &geminiResp); err != nil {
+				log.Printf("Failed to unmarshal stream chunk: %v, raw data: %s", err, dataContent)
 				continue
 			}
 
@@ -751,10 +769,17 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 			textChunk := strings.Join(parts, "")
 
 			var finishReason *string
-			if candidate.FinishReason != "" && candidate.FinishReason != "STOP" {
+			if candidate.FinishReason != "" {
 				fr := translateFinishReason(candidate.FinishReason)
 				finishReason = &fr
 			}
+
+			var delta OpenAIStreamDelta
+			if first {
+				delta.Role = "assistant"
+				first = false
+			}
+			delta.Content = textChunk
 
 			openAIChunk := OpenAIStreamResponse{
 				ID:      streamID,
@@ -764,9 +789,7 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 				Choices: []OpenAIStreamChoice{
 					{
 						Index: 0,
-						Delta: OpenAIStreamDelta{
-							Content: textChunk,
-						},
+						Delta: delta,
 						FinishReason: finishReason,
 					},
 				},
@@ -777,11 +800,15 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 				continue
 			}
 
-			_, _ = fw.Write([]byte("data: " + string(chunkBytes) + "\n\n"))
+			_, err = fw.Write([]byte("data: " + string(chunkBytes) + "\n\n"))
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	_, _ = fw.Write([]byte("data: [DONE]\n\n"))
+	_, err := fw.Write([]byte("data: [DONE]\n\n"))
+	return err
 }
 
 func (p *Proxy) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
