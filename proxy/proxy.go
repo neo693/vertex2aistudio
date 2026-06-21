@@ -789,6 +789,8 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 			continue
 		}
 
+		log.Printf("[Stream Debug] Raw line from backend: %q", line)
+
 		if strings.HasPrefix(line, "data:") {
 			dataContent := strings.TrimSpace(line[5:])
 			if dataContent == "" {
