@@ -7,9 +7,13 @@ import (
 )
 
 func TestResolveAPIKey(t *testing.T) {
-	// Setup env var and clean up after
-	os.Setenv("GEMINI_API_KEY", "env-api-key")
-	defer os.Unsetenv("GEMINI_API_KEY")
+	// Setup env vars and clean up after
+	os.Setenv("VERTEX_API_KEY", "vertex-env-key")
+	os.Setenv("GEMINI_API_KEY", "gemini-env-key")
+	defer func() {
+		os.Unsetenv("VERTEX_API_KEY")
+		os.Unsetenv("GEMINI_API_KEY")
+	}()
 
 	tests := []struct {
 		name       string
@@ -32,38 +36,30 @@ func TestResolveAPIKey(t *testing.T) {
 			expected: "my-custom-gemini-key",
 		},
 		{
-			name: "Skip GCP Token and fallback to Env Var",
+			name: "Allow GCP Token (ya29.)",
 			headers: map[string]string{
 				"Authorization": "Bearer ya29.a0AfB_abcdef",
 			},
-			expected: "env-api-key",
+			expected: "ya29.a0AfB_abcdef",
 		},
 		{
-			name:       "Skip GCP Token and no Env Var returns empty",
-			headers:    map[string]string{
-				"Authorization": "Bearer ya29.a0AfB_abcdef",
-			},
-			disableEnv: true,
-			expected:   "",
-		},
-		{
-			name:     "Fallback to Env Var",
+			name:     "Fallback to VERTEX_API_KEY",
 			headers:  map[string]string{},
-			expected: "env-api-key",
+			expected: "vertex-env-key",
 		},
 		{
-			name:       "No headers and no Env Var returns empty",
-			headers:    map[string]string{},
-			disableEnv: true,
-			expected:   "",
+			name: "Fallback to GEMINI_API_KEY if VERTEX_API_KEY is empty",
+			headers: map[string]string{},
+			disableEnv: true, // Will delete VERTEX_API_KEY
+			expected: "gemini-env-key",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.disableEnv {
-				os.Unsetenv("GEMINI_API_KEY")
-				defer os.Setenv("GEMINI_API_KEY", "env-api-key")
+				os.Unsetenv("VERTEX_API_KEY")
+				defer os.Setenv("VERTEX_API_KEY", "vertex-env-key")
 			}
 
 			req := httptest.NewRequest("POST", "/", nil)

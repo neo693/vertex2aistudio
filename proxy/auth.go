@@ -6,11 +6,12 @@ import (
 	"strings"
 )
 
-// ResolveAPIKey extracts the Google AI Studio API key from the request.
+// ResolveAPIKey extracts the API key / credential from the request.
 // It checks in the following order:
 // 1. Header "x-goog-api-key"
-// 2. Header "Authorization" with "Bearer <token>" format (unless it starts with "ya29.")
-// 3. Environment variable "GEMINI_API_KEY"
+// 2. Header "Authorization" with "Bearer <token>" format
+// 3. Environment variable "VERTEX_API_KEY"
+// 4. Environment variable "GEMINI_API_KEY" (legacy/alternative fallback)
 // If no API key is found, it returns an empty string.
 func ResolveAPIKey(r *http.Request) string {
 	// 1. Check x-goog-api-key header
@@ -22,14 +23,17 @@ func ResolveAPIKey(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 			token := strings.TrimSpace(auth[7:])
-			// GCP OAuth2 tokens start with "ya29.". If it starts with "ya29.", we shouldn't use it
-			// as a Gemini API Key because it won't be accepted by Google AI Studio.
-			if !strings.HasPrefix(token, "ya29.") && token != "" {
+			if token != "" {
 				return token
 			}
 		}
 	}
 
-	// 3. Fallback to server-wide environment variable
-	return os.Getenv("GEMINI_API_KEY")
+	// 3. Fallback to VERTEX_API_KEY environment variable
+	if key := os.Getenv("VERTEX_API_KEY"); key != "" {
+		return strings.TrimSpace(key)
+	}
+
+	// 4. Fallback to GEMINI_API_KEY environment variable
+	return strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
 }

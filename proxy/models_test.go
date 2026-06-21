@@ -13,36 +13,26 @@ func TestMapModel(t *testing.T) {
 		mappings string // MODEL_MAPPINGS env value
 	}{
 		{
-			name:     "Identity mapping",
+			name:     "Pass through gemini-1.5-pro",
 			input:    "gemini-1.5-pro",
 			expected: "gemini-1.5-pro",
 		},
 		{
-			name:     "Strip version suffix 001",
-			input:    "gemini-1.5-pro-001",
-			expected: "gemini-1.5-pro",
-		},
-		{
-			name:     "Strip version suffix 002",
-			input:    "gemini-1.5-flash-002",
+			name:     "Pass through gemini-1.5-flash",
+			input:    "gemini-1.5-flash",
 			expected: "gemini-1.5-flash",
 		},
 		{
-			name:     "Experimental model preserved",
-			input:    "gemini-2.0-flash-exp",
-			expected: "gemini-2.0-flash-exp",
+			name:     "Custom mapping override (e.g. map pro to specific version)",
+			input:    "gemini-1.5-pro",
+			expected: "gemini-1.5-pro-001",
+			mappings: "gemini-1.5-pro:gemini-1.5-pro-001,gemini-1.5-flash:gemini-1.5-flash-001",
 		},
 		{
-			name:     "Custom mapping override",
-			input:    "vertex-custom-model",
-			expected: "gemini-1.5-pro",
-			mappings: "vertex-custom-model:gemini-1.5-pro,other:flash",
-		},
-		{
-			name:     "Custom mapping and space trimming",
-			input:    "spaced-model",
-			expected: "gemini-1.5-flash",
-			mappings: " spaced-model : gemini-1.5-flash ",
+			name:     "Custom mapping with spaced entries",
+			input:    "gemini-1.5-flash",
+			expected: "gemini-1.5-flash-002",
+			mappings: " gemini-1.5-flash : gemini-1.5-flash-002 ",
 		},
 	}
 

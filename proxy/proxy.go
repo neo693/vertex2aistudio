@@ -14,17 +14,17 @@ import (
 )
 
 var (
-	// Matches Vertex AI paths, extracting Version, Model, and Action.
+	// Matches AI Studio paths, extracting Version, Model, and Action.
 	// Example matches:
-	// /v1/projects/my-project/locations/us-central1/publishers/google/models/gemini-1.5-pro:generateContent
-	// /v1beta1/projects/my-proj/locations/us-east1/models/gemini-1.5-flash:streamGenerateContent
-	routeRegex = regexp.MustCompile(`^/(v1|v1beta|v1beta1)/projects/[^/]+/locations/[^/]+/(?:publishers/google/)?models/([^/:]+):(generateContent|streamGenerateContent|countTokens|embedContent)$`)
+	// /v1beta/models/gemini-1.5-pro:generateContent
+	// /v1/models/gemini-1.5-flash:streamGenerateContent
+	routeRegex = regexp.MustCompile(`^/(v1|v1beta)/models/([^/:]+):(generateContent|streamGenerateContent|countTokens|embedContent)$`)
 )
 
 type Proxy struct {
 	mapper      *ModelMapper
 	client      *http.Client
-	apiVersion  string
+	defaultRegion string
 	enableCORS  bool
 }
 
@@ -37,9 +37,9 @@ type ErrorResponse struct {
 }
 
 func NewProxy() *Proxy {
-	apiVersion := os.Getenv("TARGET_API_VERSION")
-	if apiVersion == "" {
-		apiVersion = "v1beta" // Default to v1beta for widest feature coverage
+	defaultRegion := os.Getenv("VERTEX_REGION")
+	if defaultRegion == "" {
+		defaultRegion = "us-central1"
 	}
 
 	enableCORS := true
@@ -52,8 +52,8 @@ func NewProxy() *Proxy {
 		client: &http.Client{
 			Timeout: 10 * time.Minute, // Long timeout for streaming
 		},
-		apiVersion: apiVersion,
-		enableCORS: enableCORS,
+		defaultRegion: defaultRegion,
+		enableCORS:  enableCORS,
 	}
 }
 
@@ -86,30 +86,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 3. Resolve API Key
 	apiKey := ResolveAPIKey(r)
 	if apiKey == "" {
-		p.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Google AI Studio API key not found. Set GEMINI_API_KEY environment variable or pass x-goog-api-key / Authorization Bearer header.")
+		p.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Vertex AI API Key not found. Set VERTEX_API_KEY environment variable or pass x-goog-api-key / Authorization Bearer header.")
 		log.Printf("401 Unauthorized - Path: %s", r.URL.Path)
 		return
 	}
 
-	// 4. Map model name
+	// 4. Resolve Vertex AI configurations
+	projectID := os.Getenv("VERTEX_PROJECT_ID")
+	if projectID == "" {
+		p.writeError(w, http.StatusInternalServerError, "MISCONFIGURED", "VERTEX_PROJECT_ID environment variable is not set on the proxy server.")
+		log.Printf("500 Internal Error - Path: %s, Error: VERTEX_PROJECT_ID is empty", r.URL.Path)
+		return
+	}
+
+	region := p.defaultRegion
+
+	// 5. Map model name
 	targetModel := p.mapper.MapModel(model)
 
-	// 5. Determine target API version
-	targetVersion := p.apiVersion
-	// If client explicitly specified v1, and we didn't override default, we can preserve v1 or use v1beta
-	if clientVersion == "v1" && os.Getenv("TARGET_API_VERSION") == "" {
+	// 6. Map API version (AI Studio v1beta -> Vertex v1beta1, AI Studio v1 -> Vertex v1)
+	targetVersion := "v1beta1"
+	if clientVersion == "v1" {
 		targetVersion = "v1"
 	}
 
-	// 6. Construct target URL
-	// Google AI Studio uses https://generativelanguage.googleapis.com/{version}/models/{model}:{action}
-	endpoint := os.Getenv("AI_STUDIO_ENDPOINT")
+	// 7. Construct target URL
+	// Vertex AI uses https://{region}-aiplatform.googleapis.com/{version}/projects/{project}/locations/{region}/publishers/google/models/{model}:{action}
+	endpoint := os.Getenv("VERTEX_API_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "https://generativelanguage.googleapis.com"
+		endpoint = "https://" + region + "-aiplatform.googleapis.com"
 	}
 	parsedEndpoint, err := url.Parse(endpoint)
 	if err != nil {
-		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to parse API endpoint: "+err.Error())
+		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to parse Vertex API endpoint: "+err.Error())
 		log.Printf("500 Internal Error - Path: %s, Error: %v", r.URL.Path, err)
 		return
 	}
@@ -117,19 +126,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := &url.URL{
 		Scheme: parsedEndpoint.Scheme,
 		Host:   parsedEndpoint.Host,
-		Path:   parsedEndpoint.Path + "/" + targetVersion + "/models/" + targetModel + ":" + action,
+		Path:   parsedEndpoint.Path + "/" + targetVersion + "/projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + targetModel + ":" + action,
 	}
 
 	// Copy and modify query parameters
 	q := r.URL.Query()
-	if action == "streamGenerateContent" {
-		q.Set("alt", "sse") // AI Studio requires alt=sse for streaming
-	}
+	q.Set("key", apiKey) // Pass Vertex API key in query params
 	targetURL.RawQuery = q.Encode()
 
-	// 7. Create backend request
+	// 8. Create backend request
 	ctx := r.Context()
-	// Create request with body
 	backendReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create target request: "+err.Error())
@@ -139,9 +145,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Copy headers
 	for k, vv := range r.Header {
-		// Ignore auth-related, hosting-related and GCP specific headers
+		// Ignore auth-related, hosting-related and other keys from client
 		kLower := strings.ToLower(k)
-		if kLower == "authorization" || kLower == "host" || kLower == "x-goog-api-key" || strings.HasPrefix(kLower, "x-goog-user-project") {
+		if kLower == "authorization" || kLower == "host" || kLower == "x-goog-api-key" {
 			continue
 		}
 		for _, v := range vv {
@@ -149,29 +155,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Set API Key header for Google AI Studio
+	// Set API Key header for Vertex AI
 	backendReq.Header.Set("x-goog-api-key", apiKey)
 
 	log.Printf("Proxying [%s] %s -> %s (model: %s -> %s)", r.Method, r.URL.Path, targetURL.String(), model, targetModel)
 
-	// 8. Execute request
+	// 9. Execute request
 	resp, err := p.client.Do(backendReq)
 	if err != nil {
-		// Handle context cancellation vs backend errors
 		if ctx.Err() == context.Canceled {
 			log.Printf("Client disconnected - Path: %s", r.URL.Path)
 			return
 		}
-		p.writeError(w, http.StatusBadGateway, "BAD_GATEWAY", "Failed to contact Google AI Studio: "+err.Error())
+		p.writeError(w, http.StatusBadGateway, "BAD_GATEWAY", "Failed to contact Vertex AI: "+err.Error())
 		log.Printf("502 Bad Gateway - Path: %s, Error: %v", r.URL.Path, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	// 9. Forward response
-	// Copy headers from AI Studio
+	// 10. Forward response
+	// Copy headers from Vertex AI
 	for k, vv := range resp.Header {
-		// Exclude CORS headers from backend (if we override them)
 		if p.enableCORS {
 			kLower := strings.ToLower(k)
 			if kLower == "access-control-allow-origin" || kLower == "access-control-allow-headers" || kLower == "access-control-allow-methods" {
