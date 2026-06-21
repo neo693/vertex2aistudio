@@ -60,18 +60,29 @@ func NewProxy() *Proxy {
 	}
 }
 
+func (p *Proxy) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
+	if !p.enableCORS {
+		return
+	}
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	} else {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE, PATCH")
+}
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
-	// 1. Handle CORS preflight
-	if p.enableCORS {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE, PATCH")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	// 1. Handle CORS
+	p.setCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	path := r.URL.Path
 	// Strip duplicate or misconfigured version prefixes (e.g. /v1beta/v1beta/models/...)
@@ -279,15 +290,22 @@ func (p *Proxy) writeError(w http.ResponseWriter, statusCode int, statusStr stri
 // --- OpenAI Compatibility Structs & Translators ---
 
 type OpenAIRequest struct {
-	Model            string          `json:"model"`
-	Messages         []OpenAIMessage `json:"messages"`
-	Temperature      *float32        `json:"temperature,omitempty"`
-	MaxTokens        *int            `json:"max_tokens,omitempty"`
-	Stream           bool            `json:"stream,omitempty"`
-	TopP             *float32        `json:"top_p,omitempty"`
-	PresencePenalty  *float32        `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float32        `json:"frequency_penalty,omitempty"`
-	Stop             interface{}     `json:"stop,omitempty"` // string or []string
+	Model            string                `json:"model"`
+	Messages         []OpenAIMessage       `json:"messages"`
+	Temperature      *float32              `json:"temperature,omitempty"`
+	MaxTokens        *int                  `json:"max_tokens,omitempty"`
+	Stream           bool                  `json:"stream,omitempty"`
+	TopP             *float32              `json:"top_p,omitempty"`
+	PresencePenalty  *float32              `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float32              `json:"frequency_penalty,omitempty"`
+	Stop             interface{}           `json:"stop,omitempty"` // string or []string
+	ResponseFormat   *OpenAIResponseFormat `json:"response_format,omitempty"`
+	Tools            interface{}           `json:"tools,omitempty"`
+	ToolChoice       interface{}           `json:"tool_choice,omitempty"`
+}
+
+type OpenAIResponseFormat struct {
+	Type string `json:"type"` // e.g. "json_object"
 }
 
 type OpenAIMessage struct {
@@ -341,6 +359,7 @@ type GeminiConfig struct {
 	PresencePenalty  *float32 `json:"presencePenalty,omitempty"`
 	FrequencyPenalty *float32 `json:"frequencyPenalty,omitempty"`
 	StopSequences    []string `json:"stopSequences,omitempty"`
+	ResponseMimeType string   `json:"responseMimeType,omitempty"`
 }
 
 type GeminiResponse struct {
@@ -370,9 +389,16 @@ type OpenAIResponse struct {
 }
 
 type OpenAIChoice struct {
-	Index        int           `json:"index"`
-	Message      OpenAIMessage `json:"message"`
-	FinishReason string        `json:"finish_reason"`
+	Index        int                   `json:"index"`
+	Message      OpenAIResponseMessage `json:"message"`
+	Logprobs     interface{}           `json:"logprobs"` // will be null if nil
+	FinishReason string                `json:"finish_reason"`
+}
+
+type OpenAIResponseMessage struct {
+	Role    string      `json:"role"`
+	Content string      `json:"content"`
+	Refusal interface{} `json:"refusal"` // will be null if nil
 }
 
 type OpenAIUsage struct {
@@ -445,7 +471,7 @@ func TranslateOpenAIToGemini(req *OpenAIRequest) *GeminiRequest {
 
 	geminiReq.Contents = mergeAndValidateContents(contents)
 
-	if req.Temperature != nil || req.MaxTokens != nil || req.TopP != nil || req.PresencePenalty != nil || req.FrequencyPenalty != nil || req.Stop != nil {
+	if req.Temperature != nil || req.MaxTokens != nil || req.TopP != nil || req.PresencePenalty != nil || req.FrequencyPenalty != nil || req.Stop != nil || req.ResponseFormat != nil {
 		config := &GeminiConfig{}
 		config.Temperature = req.Temperature
 		config.MaxOutputTokens = req.MaxTokens
@@ -469,6 +495,11 @@ func TranslateOpenAIToGemini(req *OpenAIRequest) *GeminiRequest {
 				config.StopSequences = val
 			}
 		}
+
+		if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
+			config.ResponseMimeType = "application/json"
+		}
+
 		geminiReq.GenerationConfig = config
 	}
 
@@ -564,6 +595,17 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 		p.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to parse request body: "+err.Error())
 		log.Printf("400 Bad Request - Failed to parse OpenAI request body: %v - Path: %s", err, r.URL.Path)
 		return
+	}
+
+	toolsJSON := "none"
+	if openAIReq.Tools != nil {
+		if b, err := json.Marshal(openAIReq.Tools); err == nil {
+			toolsJSON = string(b)
+		}
+	}
+	log.Printf("Received OpenAI request: model=%s, stream=%v, tools=%s", openAIReq.Model, openAIReq.Stream, toolsJSON)
+	for idx, msg := range openAIReq.Messages {
+		log.Printf("  Message[%d]: role=%s, content=%q", idx, msg.Role, msg.ContentString())
 	}
 
 	model := openAIReq.Model
@@ -672,6 +714,11 @@ func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model 
 		Created: time.Now().Unix(),
 		Model:   model,
 		Choices: []OpenAIChoice{},
+		Usage: &OpenAIUsage{
+			PromptTokens:     0,
+			CompletionTokens: 0,
+			TotalTokens:      0,
+		},
 	}
 
 	var contentText string
@@ -692,25 +739,22 @@ func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model 
 
 	openAIResp.Choices = append(openAIResp.Choices, OpenAIChoice{
 		Index: 0,
-		Message: OpenAIMessage{
+		Message: OpenAIResponseMessage{
 			Role:    "assistant",
 			Content: contentText,
+			Refusal: nil,
 		},
+		Logprobs:     nil,
 		FinishReason: finishReason,
 	})
 
 	if geminiResp.UsageMetadata != nil {
-		openAIResp.Usage = &OpenAIUsage{
-			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
-		}
+		openAIResp.Usage.PromptTokens = geminiResp.UsageMetadata.PromptTokenCount
+		openAIResp.Usage.CompletionTokens = geminiResp.UsageMetadata.CandidatesTokenCount
+		openAIResp.Usage.TotalTokens = geminiResp.UsageMetadata.TotalTokenCount
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if p.enableCORS {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	return json.NewEncoder(w).Encode(openAIResp)
 }
@@ -720,9 +764,6 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Transfer-Encoding", "chunked")
-	if p.enableCORS {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-	}
 	w.WriteHeader(http.StatusOK)
 
 	fw := NewFlushingWriter(w)
@@ -844,10 +885,7 @@ func (p *Proxy) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if p.enableCORS {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(OpenAIModelList{
 		Object: "list",
