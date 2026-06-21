@@ -6,7 +6,7 @@ It intercepts incoming requests formatted for Google AI Studio, translates the p
 
 ## Key Features
 
-- **Path Translating**: Intercepts AI Studio API paths (like `/v1beta/models/{model}:generateContent`) and maps them to Vertex AI REST endpoints (`/v1beta1/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent`).
+- **Path Translating**: Intercepts AI Studio API paths (like `/v1beta/models/{model}:generateContent`) and maps them to the global Vertex AI REST API Key endpoints (`/v1beta1/publishers/google/models/{model}:generateContent`).
 - **SSE Streaming Support**: Proxies streamed responses chunk-by-chunk using a non-buffering flushing writer, keeping latency low.
 - **Flexible Authentication**: Resolves the Vertex AI API Key from:
   1. Request Header `x-goog-api-key`
@@ -26,9 +26,7 @@ Configure these in your environment or via a `.env` file (see `.env.example`):
 
 | Variable | Description | Default / Required |
 | :--- | :--- | :--- |
-| `VERTEX_PROJECT_ID` | Your Google Cloud Project ID | **Required** |
 | `VERTEX_API_KEY` | Server-wide default Google Cloud API Key for Vertex AI | *(Optional)* |
-| `VERTEX_REGION` | The Google Cloud region to target | `us-central1` |
 | `PROXY_API_KEY` | Custom API Key required from client tools to access the proxy | *(Optional)* |
 | `PORT` | Port the proxy server listens on | `8080` |
 | `MODEL_MAPPINGS` | Comma-separated list of custom mappings (`studio:vertex`) | *(Optional)* |
@@ -49,7 +47,6 @@ Ensure you have Go installed (version 1.21 or later).
 1. Clone or navigate to the repository directory.
 2. Start the proxy server:
    ```bash
-   export VERTEX_PROJECT_ID="your-gcp-project-id"
    export VERTEX_API_KEY="your-google-cloud-api-key"
    go run main.go
    ```
@@ -63,7 +60,6 @@ Ensure you have Go installed (version 1.21 or later).
 2. Run the container:
    ```bash
    docker run -p 8080:8080 \
-     -e VERTEX_PROJECT_ID="your-gcp-project-id" \
      -e VERTEX_API_KEY="your-google-cloud-api-key" \
      vertex2aistudio
    ```

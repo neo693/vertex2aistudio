@@ -129,15 +129,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Resolve Vertex AI configurations
-	projectID := os.Getenv("VERTEX_PROJECT_ID")
-	if projectID == "" {
-		p.writeError(w, http.StatusInternalServerError, "MISCONFIGURED", "VERTEX_PROJECT_ID environment variable is not set on the proxy server.")
-		log.Printf("500 Internal Error - Path: %s, Error: VERTEX_PROJECT_ID is empty", r.URL.Path)
-		return
-	}
-
-	region := p.defaultRegion
+	// 4. Resolve Vertex AI configurations (Optional: custom endpoint override)
 
 	// 5. Map model name
 	targetModel := p.mapper.MapModel(model)
@@ -149,10 +141,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 7. Construct target URL
-	// Vertex AI uses https://{region}-aiplatform.googleapis.com/{version}/projects/{project}/locations/{region}/publishers/google/models/{model}:{action}
+	// Vertex AI API Key mode uses global endpoint:
+	// https://aiplatform.googleapis.com/{version}/publishers/google/models/{model}:{action}?key={API_KEY}
 	endpoint := os.Getenv("VERTEX_API_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "https://" + region + "-aiplatform.googleapis.com"
+		endpoint = "https://aiplatform.googleapis.com"
 	}
 	parsedEndpoint, err := url.Parse(endpoint)
 	if err != nil {
@@ -164,12 +157,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := &url.URL{
 		Scheme: parsedEndpoint.Scheme,
 		Host:   parsedEndpoint.Host,
-		Path:   parsedEndpoint.Path + "/" + targetVersion + "/projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + targetModel + ":" + action,
+		Path:   parsedEndpoint.Path + "/" + targetVersion + "/publishers/google/models/" + targetModel + ":" + action,
 	}
 
 	// Copy and modify query parameters
 	q := r.URL.Query()
 	q.Set("key", targetAPIKey) // Pass Vertex API key in query params
+	if action == "streamGenerateContent" {
+		q.Set("alt", "sse") // Enforce SSE if streaming
+	}
 	targetURL.RawQuery = q.Encode()
 
 	// 8. Create backend request

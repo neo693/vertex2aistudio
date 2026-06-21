@@ -78,19 +78,6 @@ func main() {
 	})
 
 	log.Printf("Starting AI Studio to Vertex AI proxy server on port %s...", port)
-	
-	// Print configuration overview for user convenience
-	if projectID := os.Getenv("VERTEX_PROJECT_ID"); projectID != "" {
-		log.Printf("Target GCP Project ID: %s", projectID)
-	} else {
-		log.Println("WARNING: VERTEX_PROJECT_ID environment variable is not set. Requests will fail unless configured.")
-	}
-
-	if region := os.Getenv("VERTEX_REGION"); region != "" {
-		log.Printf("Target GCP Region: %s", region)
-	} else {
-		log.Println("Default GCP Region: us-central1")
-	}
 
 	proxyAPIKey := os.Getenv("PROXY_API_KEY")
 	printKey := proxyAPIKey
