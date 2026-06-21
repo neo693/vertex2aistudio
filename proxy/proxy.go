@@ -688,6 +688,8 @@ func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model 
 		contentText = strings.Join(parts, "")
 	}
 
+	log.Printf("Unary response text successfully parsed (%d chars): %q", len(contentText), contentText)
+
 	openAIResp.Choices = append(openAIResp.Choices, OpenAIChoice{
 		Index: 0,
 		Message: OpenAIMessage{
@@ -729,6 +731,7 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 	streamID := "chatcmpl-" + generateRandomID()
 	created := time.Now().Unix()
 	first := true
+	var streamedText string
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -767,6 +770,7 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 				parts = append(parts, part.Text)
 			}
 			textChunk := strings.Join(parts, "")
+			streamedText += textChunk
 
 			var finishReason *string
 			if candidate.FinishReason != "" {
@@ -808,6 +812,7 @@ func (p *Proxy) handleStreamResponse(w http.ResponseWriter, src io.Reader, model
 	}
 
 	_, err := fw.Write([]byte("data: [DONE]\n\n"))
+	log.Printf("Streaming response successfully completed. Total streamed: %d chars: %q", len(streamedText), streamedText)
 	return err
 }
 
