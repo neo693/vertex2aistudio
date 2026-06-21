@@ -14,11 +14,11 @@ import (
 )
 
 var (
-	// Matches AI Studio paths, extracting Version, Model, and Action.
+	// Matches AI Studio paths, extracting Version (optional), Model, and Action.
 	// Example matches:
 	// /v1beta/models/gemini-1.5-pro:generateContent
-	// /v1/models/gemini-1.5-flash:streamGenerateContent
-	routeRegex = regexp.MustCompile(`^/(v1|v1beta)/models/([^/:]+):(generateContent|streamGenerateContent|countTokens|embedContent)$`)
+	// /models/gemini-1.5-pro:generateContent
+	routeRegex = regexp.MustCompile(`^(?:/(v1|v1beta))?/models/([^/:]+):(generateContent|streamGenerateContent|countTokens|embedContent)$`)
 )
 
 type Proxy struct {
@@ -71,11 +71,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	path := r.URL.Path
+	// Strip duplicate or misconfigured version prefixes (e.g. /v1beta/v1beta/models/...)
+	if strings.HasPrefix(path, "/v1beta/v1beta/") {
+		path = "/v1beta/" + path[15:]
+	} else if strings.HasPrefix(path, "/v1/v1/") {
+		path = "/v1/" + path[7:]
+	} else if strings.HasPrefix(path, "/v1beta/v1/") {
+		path = "/v1beta/" + path[11:]
+	} else if strings.HasPrefix(path, "/v1/v1beta/") {
+		path = "/v1beta/" + path[11:]
+	}
+
 	// 2. Validate route
-	matches := routeRegex.FindStringSubmatch(r.URL.Path)
+	matches := routeRegex.FindStringSubmatch(path)
 	if len(matches) != 4 {
 		p.writeError(w, http.StatusNotFound, "NOT_FOUND", "Resource not found or path format invalid")
-		log.Printf("404 Not Found - Path: %s", r.URL.Path)
+		log.Printf("404 Not Found - Path: %s (cleaned: %s)", r.URL.Path, path)
 		return
 	}
 

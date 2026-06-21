@@ -141,6 +141,41 @@ func TestProxy_ServeHTTP(t *testing.T) {
 			},
 			expectedBody: "part1",
 		},
+		{
+			name:   "Successful Unary Proxy request without version prefix",
+			method: "POST",
+			path:   "/models/gemini-1.5-pro:generateContent",
+			body:   `{"contents": [{"parts": [{"text": "hello"}]}]}`,
+			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
+				// Versionless paths default to v1beta1 version path on Vertex
+				expectedPath := "/v1beta1/projects/test-project-123/locations/us-central1/publishers/google/models/gemini-1.5-pro:generateContent"
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected backend path: %s, expected: %s", r.URL.Path, expectedPath)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"candidates": [{"content": {"parts": [{"text": "no-version response"}]}}]}`))
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "no-version response",
+		},
+		{
+			name:   "Successful Unary Proxy request with duplicate version prefix",
+			method: "POST",
+			path:   "/v1beta/v1beta/models/gemini-1.5-pro:generateContent",
+			body:   `{"contents": [{"parts": [{"text": "hello"}]}]}`,
+			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
+				expectedPath := "/v1beta1/projects/test-project-123/locations/us-central1/publishers/google/models/gemini-1.5-pro:generateContent"
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected backend path: %s, expected: %s", r.URL.Path, expectedPath)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"candidates": [{"content": {"parts": [{"text": "cleaned-version response"}]}}]}`))
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "cleaned-version response",
+		},
 	}
 
 	for _, tc := range tests {
