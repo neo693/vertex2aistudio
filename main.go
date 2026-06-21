@@ -92,12 +92,28 @@ func main() {
 		log.Println("Default GCP Region: us-central1")
 	}
 
-	if os.Getenv("VERTEX_API_KEY") != "" {
-		log.Println("Default VERTEX_API_KEY is configured.")
-	} else if os.Getenv("GEMINI_API_KEY") != "" {
-		log.Println("Default GEMINI_API_KEY is configured (legacy).")
+	proxyAPIKey := os.Getenv("PROXY_API_KEY")
+	printKey := proxyAPIKey
+	if printKey == "" {
+		printKey = "[Not Enforced - Any Key Allowed]"
+	}
+
+	log.Println("--------------------------------------------------")
+	log.Println("Proxy is ready! Use these settings in your tool:")
+	log.Printf("Base URL:  http://localhost:%s/v1beta   (or /v1)", port)
+	log.Printf("API Key:   %s", printKey)
+	log.Println("--------------------------------------------------")
+
+	if proxyAPIKey != "" {
+		log.Printf("Security: Custom PROXY_API_KEY is configured. Clients MUST send this key.")
+		if os.Getenv("VERTEX_API_KEY") != "" {
+			log.Println("Security: Clients will be authorized and proxied using VERTEX_API_KEY.")
+		}
 	} else {
-		log.Println("WARNING: No VERTEX_API_KEY environment variable set. Clients must provide credentials via x-goog-api-key or Authorization headers.")
+		log.Println("Security: No PROXY_API_KEY set. Requests will pass through client-supplied keys directly to Vertex AI.")
+		if os.Getenv("VERTEX_API_KEY") != "" {
+			log.Println("Default VERTEX_API_KEY is configured as fallback for requests without keys.")
+		}
 	}
 
 	if mappings := os.Getenv("MODEL_MAPPINGS"); mappings != "" {

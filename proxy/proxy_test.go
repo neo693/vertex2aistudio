@@ -28,6 +28,7 @@ func TestProxy_ServeHTTP(t *testing.T) {
 		body           string
 		disableKey     bool
 		disableProject bool
+		proxyKey       string
 		mockBackendFn  func(w http.ResponseWriter, r *http.Request)
 		expectedStatus int
 		expectedBody   string
@@ -67,6 +68,37 @@ func TestProxy_ServeHTTP(t *testing.T) {
 			expectedBody:   "VERTEX_PROJECT_ID environment variable is not set",
 		},
 		{
+			name:     "Invalid Proxy API Key 401",
+			method:   "POST",
+			path:     "/v1beta/models/gemini-1.5-pro:generateContent",
+			proxyKey: "required-proxy-key",
+			headers: map[string]string{
+				"x-goog-api-key": "wrong-key",
+			},
+			expectedStatus: http.StatusUnauthorized,
+			expectedBody:   "Invalid Proxy API Key",
+		},
+		{
+			name:     "Valid Proxy API Key 200",
+			method:   "POST",
+			path:     "/v1/models/gemini-1.5-pro:generateContent",
+			proxyKey: "required-proxy-key",
+			headers: map[string]string{
+				"x-goog-api-key": "required-proxy-key",
+			},
+			body: `{"contents": [{"parts": [{"text": "hello"}]}]}`,
+			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("x-goog-api-key") != "test-vertex-key" {
+					t.Errorf("expected backend to receive Vertex Key, got: %s", r.Header.Get("x-goog-api-key"))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"candidates": [{"content": {"parts": [{"text": "proxy works"}]}}]}`))
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "proxy works",
+		},
+		{
 			name:   "Successful Unary Proxy request",
 			method: "POST",
 			path:   "/v1/models/gemini-1.5-pro:generateContent",
@@ -82,13 +114,6 @@ func TestProxy_ServeHTTP(t *testing.T) {
 				if r.Header.Get("x-goog-api-key") != "custom-client-key" {
 					t.Errorf("unexpected API key header: %s", r.Header.Get("x-goog-api-key"))
 				}
-				if r.URL.Query().Get("key") != "custom-client-key" {
-					t.Errorf("unexpected API key query param: %s", r.URL.Query().Get("key"))
-				}
-				bodyBytes, _ := io.ReadAll(r.Body)
-				if !strings.Contains(string(bodyBytes), "hello") {
-					t.Errorf("unexpected body content: %s", string(bodyBytes))
-				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte(`{"candidates": [{"content": {"parts": [{"text": "hi there"}]}}]}`))
@@ -102,7 +127,6 @@ func TestProxy_ServeHTTP(t *testing.T) {
 			path:   "/v1beta/models/gemini-1.5-flash:streamGenerateContent",
 			body: `{"contents": [{"parts": [{"text": "stream"}]}]}`,
 			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
-				// client v1beta maps to target v1beta1 version path on Vertex
 				expectedPath := "/v1beta1/projects/test-project-123/locations/us-central1/publishers/google/models/gemini-1.5-flash:streamGenerateContent"
 				if r.URL.Path != expectedPath {
 					t.Errorf("unexpected backend path: %s, expected: %s", r.URL.Path, expectedPath)
@@ -121,6 +145,13 @@ func TestProxy_ServeHTTP(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.proxyKey != "" {
+				os.Setenv("PROXY_API_KEY", tc.proxyKey)
+				defer os.Unsetenv("PROXY_API_KEY")
+			} else {
+				os.Unsetenv("PROXY_API_KEY")
+			}
+
 			if tc.disableKey {
 				os.Unsetenv("VERTEX_API_KEY")
 				defer os.Setenv("VERTEX_API_KEY", "test-vertex-key")

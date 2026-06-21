@@ -29,6 +29,7 @@ Configure these in your environment or via a `.env` file (see `.env.example`):
 | `VERTEX_PROJECT_ID` | Your Google Cloud Project ID | **Required** |
 | `VERTEX_API_KEY` | Server-wide default Google Cloud API Key for Vertex AI | *(Optional)* |
 | `VERTEX_REGION` | The Google Cloud region to target | `us-central1` |
+| `PROXY_API_KEY` | Custom API Key required from client tools to access the proxy | *(Optional)* |
 | `PORT` | Port the proxy server listens on | `8080` |
 | `MODEL_MAPPINGS` | Comma-separated list of custom mappings (`studio:vertex`) | *(Optional)* |
 | `DISABLE_CORS` | Set to `true` to disable wildcard CORS headers | `false` |

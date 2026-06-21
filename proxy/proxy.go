@@ -83,11 +83,37 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	model := matches[2]
 	action := matches[3]
 
-	// 3. Resolve API Key
-	apiKey := ResolveAPIKey(r)
-	if apiKey == "" {
-		p.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Vertex AI API Key not found. Set VERTEX_API_KEY environment variable or pass x-goog-api-key / Authorization Bearer header.")
-		log.Printf("401 Unauthorized - Path: %s", r.URL.Path)
+	// 3. Resolve API Key from request
+	clientKey := ResolveAPIKey(r)
+
+	// If PROXY_API_KEY is configured, we must validate clientKey against it
+	proxyAPIKey := os.Getenv("PROXY_API_KEY")
+	var targetAPIKey string
+
+	if proxyAPIKey != "" {
+		if clientKey != proxyAPIKey {
+			p.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid Proxy API Key.")
+			log.Printf("401 Unauthorized - Invalid Proxy API Key - Path: %s", r.URL.Path)
+			return
+		}
+		// If custom key matches, use VERTEX_API_KEY for the backend call
+		targetAPIKey = os.Getenv("VERTEX_API_KEY")
+		if targetAPIKey == "" {
+			// Fallback: if no backend Vertex key is configured, use the proxy key itself
+			targetAPIKey = proxyAPIKey
+		}
+	} else {
+		// If no PROXY_API_KEY is configured, clientKey is used directly as Vertex Key
+		targetAPIKey = clientKey
+		if targetAPIKey == "" {
+			// Fallback to VERTEX_API_KEY env var
+			targetAPIKey = os.Getenv("VERTEX_API_KEY")
+		}
+	}
+
+	if targetAPIKey == "" {
+		p.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Vertex AI API Key not found. Please set VERTEX_API_KEY environment variable.")
+		log.Printf("401 Unauthorized - No target Vertex API Key - Path: %s", r.URL.Path)
 		return
 	}
 
@@ -131,7 +157,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Copy and modify query parameters
 	q := r.URL.Query()
-	q.Set("key", apiKey) // Pass Vertex API key in query params
+	q.Set("key", targetAPIKey) // Pass Vertex API key in query params
 	targetURL.RawQuery = q.Encode()
 
 	// 8. Create backend request
@@ -156,7 +182,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set API Key header for Vertex AI
-	backendReq.Header.Set("x-goog-api-key", apiKey)
+	backendReq.Header.Set("x-goog-api-key", targetAPIKey)
 
 	log.Printf("Proxying [%s] %s -> %s (model: %s -> %s)", r.Method, r.URL.Path, targetURL.String(), model, targetModel)
 
