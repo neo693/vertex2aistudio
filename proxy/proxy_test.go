@@ -202,6 +202,23 @@ func TestProxy_ServeHTTP(t *testing.T) {
 			expectedBody: `chunk1`,
 		},
 		{
+			name:   "OpenAI Chat Completions with Content Parts Array",
+			method: "POST",
+			path:   "/v1/chat/completions",
+			body:   `{"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": [{"type": "text", "text": "hello from array"}]}]}`,
+			mockBackendFn: func(w http.ResponseWriter, r *http.Request) {
+				expectedPath := "/v1beta1/publishers/google/models/gemini-1.5-flash:generateContent"
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected backend path: %s, expected: %s", r.URL.Path, expectedPath)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"candidates": [{"content": {"parts": [{"text": "array content response"}]}}]}`))
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"content":"array content response"`,
+		},
+		{
 			name:   "OpenAI Models List",
 			method: "GET",
 			path:   "/v1/models",

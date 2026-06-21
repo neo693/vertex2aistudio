@@ -291,8 +291,32 @@ type OpenAIRequest struct {
 }
 
 type OpenAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // Can be string or []interface{} (array of content parts)
+}
+
+func (m *OpenAIMessage) ContentString() string {
+	if m.Content == nil {
+		return ""
+	}
+	switch val := m.Content.(type) {
+	case string:
+		return val
+	case []interface{}:
+		var parts []string
+		for _, item := range val {
+			if m, ok := item.(map[string]interface{}); ok {
+				if t, ok := m["type"].(string); ok && t == "text" {
+					if text, ok := m["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 type GeminiRequest struct {
@@ -396,8 +420,9 @@ func TranslateOpenAIToGemini(req *OpenAIRequest) *GeminiRequest {
 
 	for _, msg := range req.Messages {
 		role := strings.ToLower(msg.Role)
+		contentStr := msg.ContentString()
 		if role == "system" {
-			systemParts = append(systemParts, GeminiPart{Text: msg.Content})
+			systemParts = append(systemParts, GeminiPart{Text: contentStr})
 			continue
 		}
 
@@ -408,7 +433,7 @@ func TranslateOpenAIToGemini(req *OpenAIRequest) *GeminiRequest {
 
 		contents = append(contents, GeminiContent{
 			Role:  geminiRole,
-			Parts: []GeminiPart{{Text: msg.Content}},
+			Parts: []GeminiPart{{Text: contentStr}},
 		})
 	}
 
@@ -506,6 +531,7 @@ func translateFinishReason(reason string) string {
 }
 
 func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
 	clientKey := ResolveAPIKey(r)
 	proxyAPIKey := os.Getenv("PROXY_API_KEY")
 	var targetAPIKey string
@@ -536,6 +562,7 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 	var openAIReq OpenAIRequest
 	if err := json.NewDecoder(r.Body).Decode(&openAIReq); err != nil {
 		p.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to parse request body: "+err.Error())
+		log.Printf("400 Bad Request - Failed to parse OpenAI request body: %v - Path: %s", err, r.URL.Path)
 		return
 	}
 
@@ -546,6 +573,7 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 	geminiReqBytes, err := json.Marshal(geminiReq)
 	if err != nil {
 		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to translate request: "+err.Error())
+		log.Printf("500 Internal Error - Failed to translate request: %v - Path: %s", err, r.URL.Path)
 		return
 	}
 
@@ -563,6 +591,7 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 	parsedEndpoint, err := url.Parse(endpoint)
 	if err != nil {
 		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to parse Vertex API endpoint: "+err.Error())
+		log.Printf("500 Internal Error - Failed to parse Vertex API endpoint: %v - Path: %s", err, r.URL.Path)
 		return
 	}
 
@@ -583,6 +612,7 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 	backendReq, err := http.NewRequestWithContext(ctx, "POST", targetURL.String(), strings.NewReader(string(geminiReqBytes)))
 	if err != nil {
 		p.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create target request: "+err.Error())
+		log.Printf("500 Internal Error - Failed to create target request: %v - Path: %s", err, r.URL.Path)
 		return
 	}
 
@@ -598,13 +628,18 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		p.writeError(w, http.StatusBadGateway, "BAD_GATEWAY", "Failed to contact Vertex AI: "+err.Error())
+		log.Printf("502 Bad Gateway - OpenAI Path: %s, Error: %v", r.URL.Path, err)
 		return
 	}
 	defer resp.Body.Close()
 
+	duration := time.Since(startTime)
+
 	if resp.StatusCode != http.StatusOK {
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		w.Write(bodyBytes)
+		log.Printf("Completed [%d] (Error) in %v - OpenAI Path: %s, Backend Response: %s", resp.StatusCode, duration, r.URL.Path, string(bodyBytes))
 		return
 	}
 
@@ -613,6 +648,8 @@ func (p *Proxy) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Reque
 	} else {
 		p.handleUnaryResponse(w, resp.Body, model)
 	}
+
+	log.Printf("Completed [200] in %v - OpenAI Path: %s", duration, r.URL.Path)
 }
 
 func (p *Proxy) handleUnaryResponse(w http.ResponseWriter, src io.Reader, model string) {
